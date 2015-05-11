@@ -6,6 +6,8 @@
 *.pdb
 *.idb
 *.tlog
+*.log
+*.suo
 *.lastbuildstate
 
 # Precompiled Headers
