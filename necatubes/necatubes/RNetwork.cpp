@@ -6,8 +6,8 @@
 //  Copyright (c) 2014 Angel Mora. All rights reserved.
 //
 
-/* v15
- 
+/* v16
+ Improved the new way to create clusters. The improvemente in time is around 5%. Not so ggod but is something.
  
  //*/
 #include "RNetwork.h"
@@ -27,59 +27,30 @@ int RNetwork::Construct(ifstream &infile, string structure_type, const int &samp
     ct_end = clock();
     hout << "Read_parameters " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
     
-    if (structure_type == "file") {
-        
-        
-    } else if (structure_type == "structure"){
+    if (structure_type == "structure"){
         //Write input files so they can be used when using the option "file"
         ct_begin = clock();
         if(!Print_input_data_files(sectioned_domain_cnt, points_in, cnts_radius, cell_geo, cnts_geo, cnt_regions)) return 0;
         ct_end = clock();
         hout << "Print_input_data_files  " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-        
-        
-    } else {
+    } else if(structure_type != "file") {
         hout << "Invalid input. Only 'structure' and 'file' are accepted values. Inpur string: " << structure_type << endl;
         return 0;
     }
     
-    ct_begin = clock();
-    if (!Region_of_interest(points_in, cnt_regions, structure, sectioned_domain_cnt, cnts_radius)) return 0;
-    ct_end = clock();
-    hout << "Region_of_interest " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    
-    ct_begin = clock();
-    if(!Assign_region(box_geometry, points_in, structure)) return 0;
-    ct_end = clock();
-    hout << "Assign_region " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    
-    ct_begin = clock();
-    if(!Check_contacts(points_in, cnts_radius, tunnel, structure.size())) return 0;
-    ct_end = clock();
-    hout << "Check_contacts " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    
     //initialize the size of the box with the largest possible value
-    double window = window_max;
+    double window = window0;
     
     //Variables to use the command line
     int s, it = 0;
     char command[100];
     
     //loop over the size of the box
-    while (window >= window0) {
+    while (window <= window_max) {
         hout << "iteration " << it << " ==========================================" << endl;
-        if (window < window_max) {
-            //Clear the cluster vectors
-            Clear_vectors();
-            
-            ct_begin = clock();
-            if (!Update_region_of_interest(points_in, cnt_regions, structure, sectioned_domain_cnt, cnts_radius)) return 0;
-            ct_end = clock();
-            hout << "Update_region_of_interest " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-        }
         
         ct_begin = clock();
-        if (!Analysis(cell_geo, cnts_geo, points_in, cnts_radius, structure)) return 0;
+        if (!Analysis(window, cell_geo, cnts_geo, cnt_regions, points_in, cnts_radius, sectioned_domain_cnt, structure)) return 0;
         ct_end = clock();
         hout << "Analysis  " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
         
@@ -87,16 +58,16 @@ int RNetwork::Construct(ifstream &infile, string structure_type, const int &samp
         s = sprintf(command, "mkdir iter_%.4d", it);
         system(command);
         s = sprintf(command, "mv Single*.dat iter_%.4d", it);
-        system(command);
-        it++;//*/
+        system(command);//*/
+        it++;
         
         //update the size of the box
-        window = window - dwindow;
+        window = window + dwindow;
         //update box geomtry
         Update_box_geometry();
         
         //Send to output file the data for the restart size of the box:
-        hout << "Restart from: " << window << ' ' << dwindow << ' ' << window0 <<endl;
+        hout << "Restart from: " << window_max << ' ' << dwindow << ' ' << window <<endl;
     }
     
     
@@ -132,14 +103,14 @@ int RNetwork::Read_parameters(ifstream &infile, const struct RVE_Geo cell_geo, C
     //to the smallest.
     //window_max is the size of the sample is the simulation starts from the generation of the structure or it is the
     //restart size if data is read from a file
-    box_geometry.len_x = window_max;
-    box_geometry.wid_y = window_max;
-    box_geometry.hei_z = window_max;
+    box_geometry.len_x = window0;
+    box_geometry.wid_y = window0;
+    box_geometry.hei_z = window0;
     //The reference point of the box will be calculated using the reference point of the cell. As the observation window will
     //always be centered there is no need to specify a new point.
-    box_geometry.poi_min.x = cell_geo.poi_min.x + (cell_geo.len_x - window_max)/2;
-    box_geometry.poi_min.y = cell_geo.poi_min.y + (cell_geo.wid_y - window_max)/2;
-    box_geometry.poi_min.z = cell_geo.poi_min.z + (cell_geo.hei_z - window_max)/2;
+    box_geometry.poi_min.x = cell_geo.poi_min.x + (cell_geo.len_x - window0)/2;
+    box_geometry.poi_min.y = cell_geo.poi_min.y + (cell_geo.wid_y - window0)/2;
+    box_geometry.poi_min.z = cell_geo.poi_min.z + (cell_geo.hei_z - window0)/2;
     //These variables are to store the size of the RVE and reduces operations when accessing them
     lx = box_geometry.len_x;
     ly = box_geometry.wid_y;
@@ -168,26 +139,25 @@ int RNetwork::Read_parameters(ifstream &infile, const struct RVE_Geo cell_geo, C
         return 0;
     }
     
-    // Check that the regions are not too small for the maximum cutoff distance 2r_max+tunnel
-    if ((lx/(double)secx) < 2*cutoff) {
-        hout << "The regions along x are too many for the cutoff distance for tunneling." <<  endl;
-        hout << "The length of the region along each direction has to be at least twice the cutoff distance" << endl;
-        hout << "2cutoff = 2(2r_max+tunnel) = " << 2*cutoff << ", size of region along x = " << (lx/(double)secx) << endl;
-        return 0;
-    }
-    if ((ly/(double)secy) < 2*cutoff) {
-        hout << "The regions along y are too many for the cutoff distance for tunneling." <<  endl;
-        hout << "The length of the region along each direction has to be at least twice the cutoff distance" << endl;
-        hout << "2cutoff = 2(2r_max+tunnel) = " << 2*cutoff << ", size of region along y = " << (ly/(double)secy) << endl;
-        return 0;
-    }
-    if ((lz/(double)secz) < 2*cutoff) {
-        hout << "The regions along z are too many for the cutoff distance for tunneling." <<  endl;
-        hout << "The length of the region along each direction has to be at least twice the cutoff distance" << endl;
-        hout << "2cutoff = 2(2r_max+tunnel) = " << 2*cutoff << ", size of region along z = " << (lz/(double)secz) << endl;
-        return 0;
-    }
-    
+    /*/ Check that the regions are not too small for the maximum cutoff distance 2r_max+tunnel
+     if ((lx/(double)secx) < 2*cutoff) {
+     hout << "The regions along x are too many for the cutoff distance for tunneling." <<  endl;
+     hout << "The length of the region along each direction has to be at least twice the cutoff distance" << endl;
+     hout << "2cutoff = 2(2r_max+tunnel) = " << 2*cutoff << ", size of region along x = " << (lx/(double)secx) << endl;
+     return 0;
+     }
+     if ((ly/(double)secy) < 2*cutoff) {
+     hout << "The regions along y are too many for the cutoff distance for tunneling." <<  endl;
+     hout << "The length of the region along each direction has to be at least twice the cutoff distance" << endl;
+     hout << "2cutoff = 2(2r_max+tunnel) = " << 2*cutoff << ", size of region along y = " << (ly/(double)secy) << endl;
+     return 0;
+     }
+     if ((lz/(double)secz) < 2*cutoff) {
+     hout << "The regions along z are too many for the cutoff distance for tunneling." <<  endl;
+     hout << "The length of the region along each direction has to be at least twice the cutoff distance" << endl;
+     hout << "2cutoff = 2(2r_max+tunnel) = " << 2*cutoff << ", size of region along z = " << (lz/(double)secz) << endl;
+     return 0;
+     }//*/
     
     //Get the magnitude of voltage between these two directions
     istringstream istr_magnitude(Get_Line(infile));
@@ -212,6 +182,9 @@ int RNetwork::Print_input_data_files(vector<vector<int> > sectioned_domain_cnt, 
     }
     points.close();
     
+    //Compress the points file and delete the original one (to save space on disk)
+    system("tar -zcvf point_list_out.txt.tar.gz point_list_out.txt; rm point_list_out.txt");
+    
     //Write the list of CNT radii to a file
     ofstream radii("radii_out.txt");
     //hout << "the number of radius " << (int)cnt_radius.size() <<endl;
@@ -233,7 +206,7 @@ int RNetwork::Print_input_data_files(vector<vector<int> > sectioned_domain_cnt, 
     //These if-statements are placed because in tests a small number is stored in the variables of O(10^-310)
     //which is way below e_machine. It caused some errors when using the option to read the data
     //from files. Somehow after reading these small values, reading the following values gave a wrong number
-    //For instance, the type (CNT/CF) did not appear and more values we O(10^-310).
+    //For instance, the type (CNT/CF) did not appear and more values were O(10^-310).
     //With this the cutoff for tunneling was practically zero, so all CNTs were maked as isolated.
     //Probably these are just unused variables.
     if (cell_geo.density < Zero)
@@ -311,6 +284,73 @@ int RNetwork::Print_input_data_files(vector<vector<int> > sectioned_domain_cnt, 
     return 1;
 }
 
+//This function groups some major functions so that the proces of finding the RVE can be done iteratively
+int RNetwork::Analysis(double window, const struct RVE_Geo cell_geo, struct CNT_Geo cnts_geo, struct Region_Geo cnt_regions, vector<Point_3D> points_in, vector<double> cnts_radius, vector<vector<int> > sectioned_domain_cnt, vector<vector<long int> > structure)
+{
+    //To check the time of each function
+    clock_t ct_begin, ct_end;
+    
+    ct_begin = clock();
+    if (!Region_of_interest(points_in, cnt_regions, structure, sectioned_domain_cnt, cnts_radius)) return 0;
+    ct_end = clock();
+    hout << "Region_of_interest " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    
+    ct_begin = clock();
+    if(!Assign_region(box_geometry, points_in, structure)) return 0;
+    ct_end = clock();
+    hout << "Assign_region " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    
+    ct_begin = clock();
+    if(!Check_contacts(points_in, cnts_radius, tunnel, structure.size())) return 0;
+    ct_end = clock();
+    hout << "Check_contacts " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    
+    ct_begin = clock();
+    if(!Make_CNT_clusters(cnts_geo, points_in, structure)) return 0;
+    ct_end = clock();
+    hout << "Make_CNTC_lusters " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    
+    ct_begin = clock();
+    if(Check_clusters_percolation(points_in, structure)) {
+        /*string filename;
+         vector<int> clust(1, 0);
+         for (int i = 0; i < clusters_cnt[0].size(); i++) {
+         clust.front() = clusters_cnt[0][i];
+         ostringstream number;
+         number << clusters_cnt[0][i];
+         filename = filename.append("CNT");
+         filename = filename.append(number.str());
+         filename = filename.append(".dat");
+         Export_cnt_networks_meshes(cell_geo, structure, clust, points_in, cnts_radius, filename);
+         filename.clear();
+         }*/
+        ct_end = clock();
+        hout << "Check_clusters_percolation " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+        
+        ct_begin = clock();
+        if(!Split_cnts(points_in, cnts_radius, structure)) return 0;
+        ct_end = clock();
+        hout << "Split_cnts " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    } else{
+        ct_end = clock();
+        hout << "Check_clusters_percolation " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    }
+    
+    ct_begin = clock();
+    if (!Clusters_length(points_in, structure)) return 0;
+    ct_end = clock();
+    hout << "Clusters_length " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
+    
+    ct_begin = clock();
+    //if (!Export_visualization_files(cell_geo, points_in, cnts_radius, structure)) return 0;
+    if (!Export_visualization_files(box_geometry, points_in, cnts_radius, structure)) return 0;
+    ct_end = clock();
+    hout << "Export_visualization_files " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;//*/
+    
+    Clear_vectors();
+    
+    return 1;
+}
 
 //Make the clusters according to the box size
 int RNetwork::Region_of_interest(vector<Point_3D> &points_in, struct Region_Geo cnt_regions, vector<vector<long int> > &structure, vector<vector<int> > sectioned_domain_cnt, vector<double> &radii)
@@ -321,59 +361,16 @@ int RNetwork::Region_of_interest(vector<Point_3D> &points_in, struct Region_Geo 
     //Identify the regions where the boundaries of the box are located
     int sx0, sy0, sz0, sx1, sy1, sz1;
     
+    //hout << "5 ";
     //Gather all CNTs in the boundary
     Get_boundary_cnts(sx0, sx1, sy0, sy1, sz0, sz1, cnt_regions, sectioned_domain_cnt);
     
-    /*hout << "2 ";
-     hout << "s..." << sx0 << ' ' << sx1 << ' ' << sy0 << ' ' << sy1 << ' ' << sz0 << ' ' << sz1 << ' ';
-     hout << "box..." << box_geometry.poi_min.x << ' ' << box_geometry.poi_min.y << ' ' << box_geometry.poi_min.z << ' ';
-     hout << "cnts..." << cnt_regions.lx << ' ' << cnt_regions.ly << ' ' << cnt_regions.lz << ' ';//*/
-    /*/Fixed sx:
-     for (int j = sy0; j <= sy1; j++) {
-     for (int k = sz0; k <= sz1; k++) {
-     t = calculate_t((long int)sx0, (long int)j, (long int)k, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     t = calculate_t((long int)sx1, (long int)j, (long int)k, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     }
-     }
-     //hout << "3 ";
-     //Fixed sy
-     for (int i = sx0; i <=sx1 ; i++) {
-     for (int k = sz0; k <= sz1; k++) {
-     t = calculate_t((long int)i, (long int)sy0, (long int)k, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     t = calculate_t((long int)i, (long int)sy1, (long int)k, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     }
-     }
-     //hout << "4 ";
-     //Fixed sz
-     for (int i = sx0; i <=sx1 ; i++) {
-     for (int j = sy0; j <= sy1; j++) {
-     t = calculate_t((long int)i, (long int)j, (long int)sz0, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     t = calculate_t((long int)i, (long int)j, (long int)sz1, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     }
-     }
-     //hout << "5 ";
-     //Delete repeated CNTs
-     Discard_repeated(cnts_inside);//*/
-    
     //hout << "6 ";
     //Scan every Nanotube that is the boundary region. Delete and trim CNTs when needed.
-    if (!Locate_and_trim_boundary_cnts("", points_in, structure, radii)){
-        hout << "Error in Locate_and_trim_boundary_cnts" << endl;
+    if (!Locate_and_trim_boundary_cnts(points_in, structure, radii)){
+        hout << "Error in Locate_and_trim_boundary_cnts (initial)" << endl;
         return 0;
     }
-    //hout << "Check6 ";
     
     //hout << "7 ";
     //Remove CNTs that are empty
@@ -398,25 +395,7 @@ int RNetwork::Region_of_interest(vector<Point_3D> &points_in, struct Region_Geo 
         }
     }//*/
     
-    //hout << "8 ";
-    /*/Add the rest of CNTs inside the box
-     for (int i = sx0+1; i < sx1 ; i++) {
-     for (int j = sy0+1; j < sy1; j++) {
-     for (int k = sz0+1; k < sz1; k++) {
-     t = calculate_t(i, j, k, cnt_regions.secx, cnt_regions.secy);
-     //Add all CNTs from the current region
-     cnts_inside.insert(cnts_inside.begin(), sectioned_domain_cnt[t].begin(), sectioned_domain_cnt[t].end());
-     }
-     }
-     }
-     
-     //hout << "9 ";
-     //Delete repeated CNTs
-     Discard_repeated(cnts_inside);//*/
-    
-    //hout << "10 " << endl;
-    //Print2DVec(structure, "structure.txt");
-    //Print1DVec(cnts_inside, "cnts_inside.txt");
+    //hout << "9 ";
     
     return 1;
 }
@@ -441,7 +420,7 @@ void RNetwork::Get_boundary_cnts(int &sx0, int &sx1, int &sy0, int &sy1, int &sz
     
     //Gather all CNTs on the boundary regions
     long int t;
-    /*/hout << "2 ";
+    /*hout << "2 ";
      hout << "s..." << sx0 << ' ' << sx1 << ' ' << sy0 << ' ' << sy1 << ' ' << sz0 << ' ' << sz1 << ' ';
      hout << "box..." << box_geometry.poi_min.x << ' ' << box_geometry.poi_min.y << ' ' << box_geometry.poi_min.z << ' ';
      hout << "cnts..." << cnt_regions.lx << ' ' << cnt_regions.ly << ' ' << cnt_regions.lz << ' ';//*/
@@ -524,7 +503,7 @@ void RNetwork::Discard_repeated(vector<long int> &vec)
 }//*/
 
 //
-int RNetwork::Locate_and_trim_boundary_cnts(string update, vector<Point_3D> &points_in, vector<vector<long int> > &structure, vector<double> &radii)
+int RNetwork::Locate_and_trim_boundary_cnts(vector<Point_3D> &points_in, vector<vector<long int> > &structure, vector<double> &radii)
 {
     //These variables will help me locate the point with respect with the box
     string currentPoint, nextPoint;
@@ -537,14 +516,13 @@ int RNetwork::Locate_and_trim_boundary_cnts(string update, vector<Point_3D> &poi
     boundary_flags.assign(points_in.size(), empty);
     //Empty vector to increase size of other vectors
     vector<short int> empty_short;
-    //Resize the vector of percolation_flags with empty vector
-    //boundary_flags_cnt.assign(structure.size(), empty_short);
+    //Resize the vector of boundary_flags_cnt with empty vector
+    boundary_flags_cnt.assign(structure.size(), empty_short);
     //hout << "cnts_inside.size() = "<<cnts_inside.size()<<endl;
     for (long int i = 0; i < cnts_inside.size(); i++) {
         CNT = cnts_inside[i];
-        //hout << "Check0 " <<  CNT << ' ' << structure[CNT].size() << ' ';
+        //hout << "Check0 " <<  CNT << ' ' << structure[CNT].size() << ' ' << endl;
         //hout << " all=" << structure.size() << " contacts_cnt_point=" << contacts_cnt_point.size() << ' ' ;
-        if ( (update == "update")&&(structure.size() != contacts_cnt_point.size())) return 0;
         P1 = structure[CNT][0];
         currentPoint = Where_is(points_in[P1].x, points_in[P1].y, points_in[P1].z);
         //hout << "Check0.1 " ;
@@ -574,16 +552,6 @@ int RNetwork::Locate_and_trim_boundary_cnts(string update, vector<Point_3D> &poi
                         hout  << "Could not make projection on the boundary" << endl;
                         return 0;
                     }
-                    if (update == "update") {
-                        //hout << "1)i,j=" << i << ',' << j << endl;
-                        //Before trimming update the lists of contacts if needed. That is, if the trimmed part of the CNT
-                        //has contacts, update the contacts with the new CNT number.
-                        //Now j is the boundary point
-                        if (!Update_contacts(j, CNT, points_in, structure)){
-                            hout << "ERROR while updating contacts before trimming CNT " << CNT << '.' << endl;
-                            return 0;
-                        }
-                    }
                     //Trim the CNT from the projected boundary point, which now is in position j
                     Trim_CNT(points_in, structure, cnts_inside, radii, j, CNT);
                     //Now the position of nextPoint is for the boundary point, so I need to update nextPoint and P2
@@ -605,15 +573,6 @@ int RNetwork::Locate_and_trim_boundary_cnts(string update, vector<Point_3D> &poi
                     P2 = points_in.size()-1;
                     //hout << "Check7 ";
                 }
-                if (update == "update") {
-                    //Delete the contact point and update the other two contact vectors
-                    //hout << "2)i,j=" << i << ',' << j << endl;
-                    if (!Delete_cnt_and_point_contacts(P1, CNT, points_in))
-                    {
-                        hout << "Error with current point " << P1 << " located " << currentPoint << '.' << endl;
-                        return 0;
-                    }
-                }
                 //hout << "Check11 ";
                 //Remove the current point from the structure vector
                 structure[CNT].erase(structure[CNT].begin()+j-1);
@@ -624,7 +583,7 @@ int RNetwork::Locate_and_trim_boundary_cnts(string update, vector<Point_3D> &poi
                 //hout << "Check13 ";
                 //If the next point is outside, then the CNT might need to be trimmed
                 if (nextPoint == "outside") {
-                    hout << "Check14 ";
+                    //hout << "Check14 ";
                     //If the boundary point is the first point, then this point needs to be deleted and
                     //treated as if it was outside
                     if (j==1){
@@ -632,17 +591,6 @@ int RNetwork::Locate_and_trim_boundary_cnts(string update, vector<Point_3D> &poi
                         j--;
                     } else {
                         //If the boundary is not the first point then trim the CNT
-                        if (update == "update") {
-                            //hout << "3)i,j=" << i << ',' << j << endl;
-                            //Before trimming update the lists of contacts if needed. That is, if the trimmed part of the CNT
-                            //has contacts, update the contacts with the new CNT number.
-                            //Now j is the boundary point
-                            if (!Update_contacts(j, CNT, points_in, structure)){
-                                hout << "ERROR while updating contacts before trimming CNT " << CNT << '.' << endl;
-                                return 0;
-                            }
-                        }
-                        //Trim the CNT
                         Trim_CNT(points_in, structure, cnts_inside, radii, j-1, CNT);
                         //Add the current point to the corresponding boundary vector
                         long int point_number = structure[CNT][j-1];
@@ -828,8 +776,8 @@ void RNetwork::Trim_CNT(vector<Point_3D> &points_in, vector<vector<long int> > &
     //Here check which point is the current point
     vector<long int> empty;
     structure.push_back(empty);
-    vector<short int> zero_flag(6,0);
-    boundary_flags_cnt.push_back(zero_flag);
+    vector<short int> empty_short;
+    boundary_flags_cnt.push_back(empty_short);
     //The CNT will bre trimed from the point after the boundary point and until the last point
     structure.back().insert(structure.back().begin(),structure[CNT].begin()+boundary+1, structure[CNT].end());
     //Erase form CNT
@@ -858,35 +806,35 @@ void RNetwork::Add_to_boundary_vectors(Point_3D point3d, long int point)
     double z = point3d.z;
     int CNT = point3d.flag;
     if (x == xmin){
-        Add_CNT_to_boundary(bbdyx1_cnt, CNT);
+        //Add_CNT_to_boundary(bbdyx1_cnt, CNT);
         boundary_flags[point].push_back(0);
         boundary_flags[point].push_back(0);
-        //boundary_flags_cnt[CNT].push_back(0);
+        boundary_flags_cnt[CNT].push_back(0);
     } else if (x == xmin+lx){
-        Add_CNT_to_boundary(bbdyx2_cnt, CNT);
+        //Add_CNT_to_boundary(bbdyx2_cnt, CNT);
         boundary_flags[point].push_back(0);
         boundary_flags[point].push_back(1);
-        //boundary_flags_cnt[CNT].push_back(1);
+        boundary_flags_cnt[CNT].push_back(1);
     } else if (y == ymin){
-        Add_CNT_to_boundary(bbdyy1_cnt, CNT);
+        //Add_CNT_to_boundary(bbdyy1_cnt, CNT);
         boundary_flags[point].push_back(1);
         boundary_flags[point].push_back(0);
-        //boundary_flags_cnt[CNT].push_back(2);
+        boundary_flags_cnt[CNT].push_back(2);
     } else if (y == ymin+ly){
-        Add_CNT_to_boundary(bbdyy2_cnt, CNT);
+        //Add_CNT_to_boundary(bbdyy2_cnt, CNT);
         boundary_flags[point].push_back(1);
         boundary_flags[point].push_back(1);
-        //boundary_flags_cnt[CNT].push_back(3);
+        boundary_flags_cnt[CNT].push_back(3);
     } else if (z == zmin) {
-        Add_CNT_to_boundary(bbdyz1_cnt, CNT);
+        //Add_CNT_to_boundary(bbdyz1_cnt, CNT);
         boundary_flags[point].push_back(2);
         boundary_flags[point].push_back(0);
-        //boundary_flags_cnt[CNT].push_back(4);
+        boundary_flags_cnt[CNT].push_back(4);
     } else if (z == zmin+lz) {
-        Add_CNT_to_boundary(bbdyz2_cnt, CNT);
+        //Add_CNT_to_boundary(bbdyz2_cnt, CNT);
         boundary_flags[point].push_back(2);
         boundary_flags[point].push_back(1);
-        //boundary_flags_cnt[CNT].push_back(5);
+        boundary_flags_cnt[CNT].push_back(5);
     }
 }
 
@@ -932,14 +880,38 @@ int RNetwork::Assign_region(const struct RVE_Geo cell_geo, vector<Point_3D> poin
     double ymin = cell_geo.poi_min.y;
     double zmin = cell_geo.poi_min.z;
     
-    //Sizes of each region
-    double dx = lx/secx;
-    double dy = ly/secy;
-    double dz = lz/secz;
+    int sx = secx;
+    int sy = secy;
+    int sz = secz;
     
-    //hout << "SECX = " << secx << '\t' << "dx = " << dx << "\n";
-    //hout << "SECY = " << secy << '\t' << "dy = " << dy << "\n";
-    //hout << "SECZ = " << secz << '\t' << "dz = " << dz  << "\n";
+    //Sizes of each region
+    double dx = lx/(double)sx;
+    double dy = ly/(double)sy;
+    double dz = lz/(double)sz;
+    
+    //hout << "sx = " << sx << '\t' << "dx = " << dx << "\n";
+    //hout << "sy = " << sy << '\t' << "dy = " << dy << "\n";
+    //hout << "sz = " << sz << '\t' << "dz = " << dz  << "\n";
+    
+    //Check that the regions are not too small for the maximum cutoff distance 2r_max+tunnel
+    //If they are, then change the number of sections to the maximum possible
+    if (dx < 2*cutoff) {
+        dx = 2*cutoff;
+        sx = (int)(lx/dx);
+        //hout << "Modified the number of sections along x. " << "sx = " << sx << '\t' << "dx = " << dx << endl;
+    }
+    if (dy < 2*cutoff) {
+        dy = 2*cutoff;
+        sy = (int)(ly/dy);
+        //hout << "Modified the number of sections along y. " << "sy = " << sy << '\t' << "dy = " << dy << endl;
+    }
+    if (dz < 2*cutoff) {
+        dz = 2*cutoff;
+        sz = (int)(lz/dz);
+        //hout << "Modified the number of sections along z. " << "sz = " << sz << '\t' << "dz = " << dz  << endl;
+    }
+    
+    
     //These variables will give me the region cordinates of the region that a point belongs to
     int a, b, c;
     long int t;
@@ -949,10 +921,10 @@ int RNetwork::Assign_region(const struct RVE_Geo cell_geo, vector<Point_3D> poin
     int CNT;
     long int P;
     
-    //There will be secx*secy*secz different regions
+    //There will be sx*sy*sz different regions
     sectioned_domain.clear();
     vector<long int> empty_long;
-    sectioned_domain.assign(secx*secy*secz, empty_long);
+    sectioned_domain.assign(sx*sy*sz, empty_long);
     
     //First loop over the CNTs inside the box, then loop over the points inside each CNT
     for (int i = 0; i < (int)cnts_inside.size(); i++) {
@@ -966,25 +938,25 @@ int RNetwork::Assign_region(const struct RVE_Geo cell_geo, vector<Point_3D> poin
             
             //Calculate the region-coordinates
             a = (int)((x-xmin)/dx);
-            //Limit the value of a as it has to go from 0 to secx-1
-            if (a == secx) a--;
+            //Limit the value of a as it has to go from 0 to sx-1
+            if (a == sx) a--;
             b = (int)((y-ymin)/dy);
-            //Limit the value of b as it has to go from 0 to secy-1
-            if (b == secy) b--;
+            //Limit the value of b as it has to go from 0 to sy-1
+            if (b == sy) b--;
             c = (int)((z-zmin)/dz);
-            //Limit the value of c as it has to go from 0 to secz-1
-            if (c == secz) c--;
+            //Limit the value of c as it has to go from 0 to sz-1
+            if (c == sz) c--;
             
             //Coordinates of non-overlaping region the point belongs to
             double x1 = a*dx +  xmin;
             double y1 = b*dy +  ymin;
             double z1 = c*dz +  zmin;
             double x2, y2, z2;
-            if (a == secx-1) x2 = lx +  xmin;
+            if (a == sx-1) x2 = lx +  xmin;
             else x2 = (a+1)*dx +  xmin;
-            if (b == secy-1) y2 = ly +  ymin;
+            if (b == sy-1) y2 = ly +  ymin;
             else y2 = (b+1)*dy +  ymin;
-            if (c == secz-1) z2 = lz +  zmin;
+            if (c == sz-1) z2 = lz +  zmin;
             else z2 = (c+1)*dz +  zmin;
             
             //Initialize flags for overlaping regions
@@ -1017,7 +989,7 @@ int RNetwork::Assign_region(const struct RVE_Geo cell_geo, vector<Point_3D> poin
                     if (!fy) jj++; //if flag is zero, do this loop only once
                     for (int kk = 0; kk < 2; kk++) {
                         if (!fz) kk++; //if flag is zero, do this loop only once
-                        t = calculate_t(temp[ii][0],temp[jj][1],temp[kk][2],secx,secy);
+                        t = calculate_t(temp[ii][0],temp[jj][1],temp[kk][2],sx,sy);
                         sectioned_domain[t].push_back(P);
                     }
                 }
@@ -1105,7 +1077,7 @@ int RNetwork::Check_contacts(vector<Point_3D> points_in, vector<double> radii, d
     }
     //Print2DVec(contacts_cnt, "contacts_cnt.txt");
     //Print2DVec(contacts, "contacts.txt");
-    Print2DVec(contacts_cnt_point, "contacts_cnt_point.txt");
+    //Print2DVec(contacts_cnt_point, "contacts_cnt_point.txt");
     return 1;
 }
 
@@ -1129,267 +1101,6 @@ int RNetwork::Check_repeated(vector<int> region, int Point)
         }
     }
     return 0;
-}
-
-//Make the clusters according to the box size
-int RNetwork::Update_region_of_interest(vector<Point_3D> &points_in, struct Region_Geo cnt_regions, vector<vector<long int> > &structure, vector<vector<int> > sectioned_domain_cnt, vector<double> &radii)
-{
-    //Store all the CNTs inside and their flags before the update in a new variable
-    vector<int> cnts_inside_old(cnts_inside);
-    //vector<char> cnts_inside_flags_old(cnts_inside_flags);
-    //Clear the cnts_inside and cnts_inside_flags vectors
-    cnts_inside.clear();
-    cnts_inside_flags.assign(structure.size(), '0');
-    
-    //Identify the regions where the boundaries of the box are located
-    int sx0, sy0, sz0, sx1, sy1, sz1;
-    
-    //Gather all CNTs in the boundary
-    Get_boundary_cnts(sx0, sx1, sy0, sy1, sz0, sz1, cnt_regions, sectioned_domain_cnt);
-    //CNTs on the boundary regions
-    //int cnts_inside_size = (int)cnts_inside.size();
-    
-    //The cnts_inside_flags was cleared just to construct the vector cnts_inside faster
-    //To make the update in the cnts on the boundary I need to get the old cnts_inside_flags back
-    //cnts_inside_flags = cnts_inside_flags_old;
-    
-    hout << "start locate update" << endl;
-    //Update contact vectors of CNTs around the boundary
-    if (!Locate_and_trim_boundary_cnts("update", points_in, structure, radii)){
-        hout << "Error in Locate_and_trim_boundary_cnts" << endl;
-        return 0;
-    }
-    hout << "end locate update" << endl;
-    
-    //Add the rest of CNTs inside the box
-    long int t;
-    for (int i = sx0+1; i < sx1 ; i++) {
-        for (int j = sy0+1; j < sy1; j++) {
-            for (int k = sz0+1; k < sz1; k++) {
-                t = calculate_t(i, j, k, cnt_regions.secx, cnt_regions.secy);
-                //Add all CNTs from the current region
-                Update_cnts_inside_flags(sectioned_domain_cnt, t);
-            }
-        }
-    }//*/
-
-    /*/In case there are new CNTs, add them to the old cnts_inside
-    if (cnts_inside.size() > cnts_inside_size){
-        cnts_inside_old.insert(cnts_inside_old.end(), cnts_inside.begin()+cnts_inside_size, cnts_inside.end());
-    }
-    //Return the old cnts_inside and then delete cnts that are no longer inside
-    cnts_inside = cnts_inside_old;//*/
-    //Delete cnts that are outside
-    int CNT;
-    for (int i = (int)cnts_inside.size()-1; i >= 0; i--) {
-        CNT = cnts_inside[i];
-        if (!structure[CNT].size()) {
-            cnts_inside.erase(cnts_inside.begin()+i);
-            //cnts_inside_flags[CNT] = '0';
-        }
-    }
-    
-    return 1;
-}
-
-//This function updates the contact vectors contacts_cnt_point and contacts_cnt when a CNT is trimmed
-int RNetwork::Update_contacts(long int boundary_l, int CNT, vector<Point_3D> &points_in, vector<vector<long int> > structure)
-{
-    
-    //-----------------------------------------------------
-    //Update contacts_cnt_point. For that scan all the current CNT. All points before and including boundary_l
-    //will remain in CNT, all other will move to the new trimmed CNT. In the same way, all contacts before
-    //boundary_l stay the same and the ones after boundary_l have to be updated.
-    
-    //hout << "1 ";
-    //In these variable I will save the contact points that will be updated and stay
-    //Contact Points Move, Others Point Move, Others CNT Move,  Others Point Stay, Others CNT Move
-    vector <long int> points_move, others_p_move, others_p_stay;
-    vector <int> others_cnt_move, others_cnt_stay;
-    //vector <long int> points_move, others_p_move, others_p_stay, others_cnt_move, others_cnt_stay;
-    //empty vector to increase size of other vectors
-    vector <long int> empty_long;
-    vector <int> empty_int;
-    
-    //hout << "2 ";
-    //There will be one more CNT so contacts_cnt_point and contacts_cnt need to increase in size
-    contacts_cnt_point.push_back(empty_long);
-    contacts_cnt.push_back(empty_int);
-    int new_CNT = (int) contacts_cnt.size() - 1;
-    
-    //hout << "3 ";
-    //Gather all contacts that will move. Start looking after the boundary point. Also update the CNT number of the point
-    long int P1;
-    int CNT1;
-    for (long int i = boundary_l+1; i < structure[CNT].size(); i++) {
-        P1 = structure[CNT][i];
-        //Update flag
-        points_in[P1].flag = new_CNT;
-        //If the point has contacts save them in the points_move vector
-        if (contacts[P1].size()){
-            points_move.push_back(P1);
-            Remove_from_vector(P1,contacts_cnt_point[CNT]);
-        }
-    }
-    contacts_cnt_point.back() = points_move;
-    
-    //-----------------------------------------------------
-    //At this point contacts_cnt_point is updated. Just need to update contacts_cnt which is more tricky
-    
-    //hout << "4 ";
-    //Find the Points to which the points in points_move and contacts_cnt_point[CNT] have a contact with
-    for (int i = 0; i < (int)points_move.size(); i++) {
-        P1 = points_move[i];
-        others_p_move.insert(others_p_move.end(),contacts[P1].begin(),contacts[P1].end());
-    }
-    //hout << "5 ";
-    for (int i = 0; i < (int)contacts_cnt_point[CNT].size(); i++) {
-        P1 = contacts_cnt_point[CNT][i];
-        others_p_stay.insert(others_p_stay.end(),contacts[P1].begin(),contacts[P1].end());
-    }
-    
-    //hout << "6 ";
-    //Find the CNTs of those Points in others_p_move and oothers_p_stayps we just found
-    for (int i = 0; i < (int)others_p_move.size(); i++) {
-        P1 = others_p_move[i];
-        CNT1 = points_in[P1].flag;
-        others_cnt_move.push_back(CNT1);
-    }
-    //hout << "7 "<<"s=" <<others_cnt_move.size() << ' ';
-    if (others_cnt_move.size() > 1) {
-        Discard_repeated(others_cnt_move);
-    }
-    //hout << "8 ";
-    for (int i = 0; i < (int)others_p_stay.size(); i++) {
-        P1 = others_p_stay[i];
-        CNT1 = points_in[P1].flag;
-        others_cnt_stay.push_back(CNT1);
-    }
-    //hout << "9 "<<"s=" <<others_cnt_stay.size() << ' ';
-    if (others_cnt_stay.size() > 1) {
-        Discard_repeated(others_cnt_stay);
-    }
-    
-    //hout << "10 ";
-    //Compare the two vectors others_cnt_move and others_cnt_stay.
-    //If a CNT is in both, then just add the NEW CNT to the list of contacts to that common CNT.
-    //If a CNT is in others_cnt_move but not in others_cnt_stay then delete the current contact of
-    //others_cnt_move[i] with CNT. Then add the contact with the new CNT (contacts_cnt.size()-1).
-    for (int i = 0; i < (int)others_cnt_move.size();i++) {
-        CNT1 = (int)others_cnt_move[i];
-        contacts_cnt[CNT1].push_back(new_CNT);
-        contacts_cnt.back().push_back(CNT1);
-        if (!Check_repeated(others_cnt_stay, CNT1)){
-            Remove_from_vector(CNT, contacts_cnt[CNT1]);
-            Remove_from_vector(CNT1, contacts_cnt[CNT]);
-        }
-    }
-    //hout << "11 " << endl;
-    
-    return 1;
-}
-
-//This functions adjusts the contact vectors when a contact point is deleted
-int RNetwork::Delete_cnt_and_point_contacts(long int point, int CNT, vector<Point_3D> points_in)
-{
-    //----------------------------------
-    //Update contacts_cnt_point
-    
-    //Variables for the other contacts
-    long int P;
-    int CNT_P;
-    
-    //First remove from contacts_cnt_point
-    Remove_from_vector(point, contacts_cnt_point[CNT]);
-    //hout << "1 ";
-    
-    //Check if contacs of others with "point" also need to be deleted
-    for (long int i = 0; i < contacts[point].size(); i++) {
-        //point and P are in contact. If P has only one contact, then it HAS to be with point.
-        //In this case P has to be deleted from contacts_point[CNT_P], where CNT_P is the CNT
-        //to which P belongs.
-        //If P has more than one contact, then it has to stay in contacts_point[CNT_P]
-        P = contacts[point][i];
-        CNT_P = points_in[P].flag;
-        //hout << "1.1 ";
-        if (contacts[P].size() == 1) {
-            //hout << "1.2 ";
-            if (contacts[P][0] == point) {
-                //hout << "1.3.1 ";
-                //hout << "P=" << P << " CNT_P=" << CNT_P << " contacts_cnt_point[CNT_P].size()=" << contacts_cnt_point[CNT_P].size() << ' ';
-                Remove_from_vector(P, contacts_cnt_point[CNT_P]);
-                //If this point happened to be the only contact of CNT_P, then I need to remove the contact
-                //between CNT and CNT_P
-                //hout << "1.3.2 ";
-                if (!contacts_cnt_point[CNT_P].size()) {
-                    Remove_from_vector(CNT, contacts_cnt[CNT_P]);
-                    Remove_from_vector(CNT_P, contacts_cnt[CNT]);
-                }
-                //hout << "1.4 ";
-            } else {
-                hout << "ERROR while deleting contacts of point " << point;
-                hout << ". contacts_point indicates a (unique) contact with P = " << P;
-                hout << ". Point P is not indicated as a contact point in vector contacts_cnt_point." << endl;
-                return 0;
-            }
-            //hout << "1.5 ";
-        }
-        //hout << "1.6 ";
-    }
-    //hout << "2 ";
-    
-    //----------------------------------
-    //Update contacts_point
-    //As point was deleted, just delete all its contacts
-    if (!Delete_contact(point, contacts)) {
-        hout << "Error with current point " << point << '.' << endl;
-        return 0;
-    }
-    
-    //----------------------------------
-    //Update contacts_cnt
-    
-    //The idea is to store in a temporary vector the current contacts of CNT, that is contacts_cnt[CNT]
-    //I will check each point in CNT that still has a contact, that is, each point in contacts_cnt_point[CNT].
-    //Each point in contacts_cnt_point[CNT] has a contacts point P that belongs to CNT_P.
-    //So I delete CNT_P from the temporary vector.
-    //After scanning all point in contacts_cnt_point[CNT], if there are still CNTs in the temporary vector,
-    //that means that the contact between CNT and that vector element was lost, so I just have to delete that particular contact
-    
-    //hout << "3 ";
-    //If there are no more contact points in contacts_cnt_point, then remove all CNT contacts
-    if (!contacts_cnt_point[CNT].size()) {
-        Delete_contact(CNT, contacts_cnt);
-    } else {
-        //If there are still contact points in contacts_cnt_point, check if a CNT contact needs to be deleted
-        
-        //Temporary variables
-        vector<int> to_delete = contacts_cnt[CNT];
-        
-        //hout << "4 ";
-        for (long int i = 0; i < contacts_cnt_point[CNT].size(); i++ ) {
-            //Scan each of the remaining contact points
-            point = contacts_cnt_point[CNT][i];
-            //Find its contacts
-            //hout << "4.1 ";
-            for (long int j = 0; j < contacts[point].size(); j++) {
-                P = contacts[point][j];
-                CNT_P = points_in[P].flag;
-                //Delete each CNT that still has a contact with CNT
-                Remove_from_vector(CNT_P, to_delete);
-            }
-        }
-        //hout << "5 ";
-        //Delete all contacts left in vector to_delete
-        for (long int i = 0; i < to_delete.size(); i++) {
-            CNT_P = to_delete[i];
-            Remove_from_vector(CNT, contacts_cnt[CNT_P]);
-            Remove_from_vector(CNT_P, contacts_cnt[CNT]);
-        }
-        //hout << "6 " << endl;
-    }
-    
-    return 1;
 }
 
 //This function deletes contact from the contact list given by contacts_vector
@@ -1452,54 +1163,44 @@ int RNetwork::Delete_contact(long int contact, vector<vector<long int> > &contac
     return 1;
 }
 
-//This function groups some major functions so that the proces of finding the RVE can be done iteratively
-int RNetwork::Analysis(const struct RVE_Geo cell_geo, struct CNT_Geo cnts_geo, vector<Point_3D> points_in, vector<double> cnts_radius, vector<vector<long int> > structure)
+void RNetwork::Clear_vectors()
 {
-    //To check the time of each function
-    clock_t ct_begin, ct_end;
-    
-    ct_begin = clock();
-    if(!Make_CNT_clusters(cnts_geo, points_in, structure)) return 0;
-    ct_end = clock();
-    hout << "Make_CNTC_lusters " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    
-    ct_begin = clock();
-    if(Check_clusters_percolation(points_in, structure)) {
-        /*string filename;
-         vector<int> clust(1, 0);
-         for (int i = 0; i < clusters_cnt[0].size(); i++) {
-         clust.front() = clusters_cnt[0][i];
-         ostringstream number;
-         number << clusters_cnt[0][i];
-         filename = filename.append("CNT");
-         filename = filename.append(number.str());
-         filename = filename.append(".dat");
-         Export_cnt_networks_meshes(cell_geo, structure, clust, points_in, cnts_radius, filename);
-         filename.clear();
-         }*/
-        ct_end = clock();
-        hout << "Check_clusters_percolation " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-        
-        ct_begin = clock();
-        if(!Split_cnts(points_in, cnts_radius, structure)) return 0;
-        ct_end = clock();
-        hout << "Split_cnts " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    } else{
-        ct_end = clock();
-        hout << "Check_clusters_percolation " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    }
-    
-    ct_begin = clock();
-    if (!Clusters_length(points_in, structure)) return 0;
-    ct_end = clock();
-    hout << "Clusters_length " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;
-    
-    ct_begin = clock();
-    if (!Export_visualization_files(cell_geo, points_in, cnts_radius, structure)) return 0;
-    ct_end = clock();
-    hout << "Export_visualization_files " << (double)(ct_end-ct_begin)/CLOCKS_PER_SEC << " secs " << endl;//*/
-    
-    return 1;
+    //Cluster vectors
+    clusters_cnt.clear();
+    directional_clusters.clear();
+    isolated.clear();
+    dead_branches.clear();
+    //Family number
+    family.clear();
+    //Boundary vectors
+    bbdyx1_cnt.clear();
+    bbdyx2_cnt.clear();
+    bbdyy1_cnt.clear();
+    bbdyy2_cnt.clear();
+    bbdyz1_cnt.clear();
+    bbdyz2_cnt.clear();
+    //Percolation flags
+    boundary_flags_cnt.clear();
+    percolation_flags.clear();
+    //contacts vectors
+    contacts.clear();
+    contacts_cnt.clear();
+    contacts_cnt_point.clear();
+    //Length vectors
+    clusters_lengths.clear();
+    dead_branches_lengths.clear();
+    clusters_fractions.clear();
+    //Sphere vectors
+    sphere_c.clear();
+    sphere_r.clear();
+    closest_distance.clear();
+    //Boundary flags
+    boundary_flags.clear();
+    //Inside flags
+    cnts_inside.clear();
+    cnts_inside_flags.clear();
+    //Sub-domains to check contacts
+    sectioned_domain.clear();
 }
 
 //This function will generate the clusters of CNT numbers
@@ -1530,6 +1231,16 @@ int RNetwork::Make_CNT_clusters(struct CNT_Geo cnts_geo, vector<Point_3D> points
                     vector<int> empty;
                     clusters_cnt.push_back(empty);
                     clusters_cnt.back().push_back(CNT);
+                    //Update the boundary_flags_cnt vector
+                    //Initialize the vector of flags the cluster
+                    vector<short int> cluster_flag(7,0);
+                    //Add corresponding flags
+                    for (int a = 0; a < (int)boundary_flags_cnt[CNT].size(); a++) {
+                        short int flag = boundary_flags_cnt[CNT][a];
+                        cluster_flag[flag] = 1;
+                    }
+                    //Add to vector of cluster flags
+                    percolation_flags.push_back(cluster_flag);
                 } else {
                     //hout << "Check3b " << endl;
                     isolated.push_back(empty);
@@ -1549,7 +1260,7 @@ int RNetwork::Make_CNT_clusters(struct CNT_Geo cnts_geo, vector<Point_3D> points
             }
         }
     }
-    //hout << "Check7 ";
+    //hout << "Check7 " << "clusters_cnt.size() " << clusters_cnt.size() << ' ';
     
     //Then make clusters of CNTs
     int count;
@@ -1564,16 +1275,24 @@ int RNetwork::Make_CNT_clusters(struct CNT_Geo cnts_geo, vector<Point_3D> points
         //hout << "Check7.1 ";
         if (contacts_cnt_tmp[CNT].size()) {
             vec = contacts_cnt_tmp[CNT];
-            //vector<short int> cluster_flag(6,0);
+            vector<short int> cluster_flag(7,0);
             //hout << "Check7.2 ";
             count = -1;
+            //This will help save time when creating the clusters. Instead of scanning all CNTs from the beginning at every loop
+            //in the function Single_cluster, it wil scan only the newyle added CNTs
+            int start = 0;
             do {
                 //hout << "Check7.3 ";
-                count = Single_cluster(CNT, vec, contacts_cnt_tmp);
-                //count = Single_cluster(CNT, vec, contacts_cnt_tmp,cluster_flag);
+                //count = Single_cluster(CNT, start, vec, contacts_cnt_tmp);
+                count = Single_cluster(CNT, start, vec, contacts_cnt_tmp,cluster_flag);
                 
                 Discard_repeated(vec);
+                //At the following loop, the search of CNT contacts has to start from the first newly added CNT
+                //This CNT will start at index contacts_cnt_tmp[CNT].size() since contacts_cnt_tmp[CNT] is the initial cluster
+                //and vec is contacts_cnt_tmp[CNT] with more CNTs
+                start = (int)contacts_cnt_tmp[CNT].size();
                 //hout << "Check7.5 ";
+                //Update the vector that contains the new cluster
                 contacts_cnt_tmp[CNT] = vec;
                 /*/
                  for (unsigned j = 0; j < contacts_cnt_tmp[CNT].size(); j++) {
@@ -1584,7 +1303,7 @@ int RNetwork::Make_CNT_clusters(struct CNT_Geo cnts_geo, vector<Point_3D> points
             //hout << "Check7.6 ";
             //Now in contacts_cnt_tmp[CNT] we have a cluster. So save it in the vector of CNT clusters
             clusters_cnt.push_back(contacts_cnt_tmp[CNT]);
-            //percolation_flags.push_back(cluster_flag);
+            percolation_flags.push_back(cluster_flag);
             //Clear the vector variable to find the next cluster
             vec.clear();
             //hout << "Check7.7 ";
@@ -1593,32 +1312,14 @@ int RNetwork::Make_CNT_clusters(struct CNT_Geo cnts_geo, vector<Point_3D> points
     return 1;
 }
 
-void RNetwork::Clear_vectors()
-{
-    //Cluster vectors
-    clusters_cnt.clear();
-    directional_clusters.clear();
-    isolated.clear();
-    dead_branches.clear();
-    //Family number
-    family.clear();
-    //Boundary vectors
-    bbdyx1_cnt.clear();
-    bbdyx2_cnt.clear();
-    bbdyy1_cnt.clear();
-    bbdyy2_cnt.clear();
-    bbdyz1_cnt.clear();
-    bbdyz2_cnt.clear();
-}
-
 //This function creates one cluster at a time
-int RNetwork::Single_cluster(int cnt_seed, vector<int> &vec, vector<vector<int> > &contacts_vector)
+int RNetwork::Single_cluster(int cnt_seed, int start, vector<int> &vec, vector<vector<int> > &contacts_vector)
 {
     int CNT;
     int count = 0;
     int limit = (int)vec.size();
     //hout << "\nCNT base = " << index << endl;
-    for (int i = 0; i < limit; i++) {
+    for (int i = start; i < limit; i++) {
         CNT = vec[i];
         //hout << "CNT=" << CNT << " v2[CNT].size()=" << v2[CNT].size() << ' ';
         if ( (contacts_vector[CNT].size()) && (CNT != cnt_seed) ) {
@@ -1635,13 +1336,13 @@ int RNetwork::Single_cluster(int cnt_seed, vector<int> &vec, vector<vector<int> 
 }
 
 //This function creates one cluster at a time
-int RNetwork::Single_cluster(int cnt_seed, vector<int> &vec, vector<vector<int> > &contacts_vector, vector<short int> &cluster_flag)
+int RNetwork::Single_cluster(int cnt_seed, int start, vector<int> &vec, vector<vector<int> > &contacts_vector, vector<short int> &cluster_flag)
 {
     int CNT;
     int count = 0;
     int limit = (int)vec.size();
     //hout << "\nCNT base = " << index << endl;
-    for (int i = 0; i < limit; i++) {
+    for (int i = start; i < limit; i++) {
         CNT = vec[i];
         //hout << "CNT=" << CNT << " v2[CNT].size()=" << v2[CNT].size() << ' ';
         if ( (contacts_vector[CNT].size()) && (CNT != cnt_seed) ) {
@@ -1673,11 +1374,12 @@ int RNetwork::Check_clusters_percolation(vector<Point_3D> points_in, vector<vect
         //This variable will store the family number given by CheckPercolationSingleCluster
         int fam;
         for (int i = size - 1; i >= 0 ; i--) {
-            //hout <<"CheckPercolationSingleCluster " << i << " size " << clusters_cnt.size() << '\n';
-            if (!Check_percolation_single_cluster(clusters_cnt[i], fam)){
+            //hout <<"Check_clusters_percolation " << i << " size " << clusters_cnt.size() << endl;
+            //hout << "percolation_flags.size()=" << percolation_flags.size() << endl;
+            //if (!Check_percolation_single_cluster(clusters_cnt[i], fam)){
+            if (!Check_percolation_single_cluster(percolation_flags[i], fam)){
                 //percolation_flags and clusters_cnt have the same size
-                //if (!Check_percolation_single_cluster(percolation_flags[i], fam)){
-                //hout << "\tNO\n";
+                //hout << "NO\n";
                 isolated.push_back(clusters_cnt[i]);
                 //remove the non-percolating cluster
                 clusters_cnt.erase(clusters_cnt.begin()+i);
@@ -1895,7 +1597,7 @@ int RNetwork::Find_spheres(vector<Point_3D> points_in, vector<vector<long int> >
     
     //Resize the vectors that store the closest sphere to the necessary size
     //Initialize each element of the closest_distance vector with a large value
-    closest_distance.resize(sphere_c.size(), lx + ly + lz);
+    closest_distance.assign(sphere_c.size(), lx + ly + lz);
     for (int i = 0; i < (int)sphere_c.size()-1; i++) { //This for-loop has to end one element before the last
         //hout << "Check14 ";
         for (int j = i+1; j < (int)sphere_c.size(); j++) {
@@ -1987,26 +1689,21 @@ int RNetwork::Split_cnts(vector<Point_3D> &points_in, vector<double> &cnts_radiu
         //size of the cluster is greater than one, the DEA is applied. Otherwise The CNT number is added
         //to the corresponding directional_cluster
         if (clusters_cnt[i].size() > 1) {
-            LM_matrix.resize(points_in.size(), -1);
+            LM_matrix.assign(points_in.size(), -1);
             global_nodes = Get_LM_matrix(family[i], clusters_cnt[i], structure, contacts_cnt_point, LM_matrix);
             //hout << "Check2 global_nodes=" << global_nodes << ' ';
             //Check that the number of nodes is not zero
             if (!global_nodes)
                 return 0;
             
-            //Initialize stiffness matrix
-            //MathMatrix stiffness(global_nodes,global_nodes);
             //hout << "Check3 ";
-            //Fill stiffness matrix
-            //Fill_stiffness_matrix(clusters_cnt[i], structure, LM_matrix, stiffness);
-            //voltages = Solve_DEA_equations_CG_SSS(stiffness);
-            //hout << "Check4 " << endl;
             //Fill the sparse stiffness matrix
             Fill_sparse_stiffness_matrix(global_nodes, clusters_cnt[i], structure, LM_matrix, col_ind, row_ptr, values, diagonal, R);
             //Extract the electric backbone using the direct electrifying algorithm. To solve the system of
             //equations, the conjugate gradient (CG) is used. To reduce the computational cost of vector-matrix
             //multiplication, and given that the stiffness matrix is symmetric and sparse, the Symmetric Sparse
             //Skyline (SSS) format is used.
+            //hout << "Check4 " << endl;
             voltages = Solve_DEA_equations_CG_SSS(global_nodes, col_ind, row_ptr, values, diagonal, R);
             //hout << "Check5 " << endl;
             
@@ -2145,70 +1842,6 @@ int RNetwork::Is_in_relevant_boundary(int family, int boundary_node)
         return 1;
     else
         return 0;
-}
-
-void RNetwork::Fill_stiffness_matrix(vector<int> cluster, vector<vector<long int> > structure, vector<int> LM_matrix, MathMatrix &stiffness)
-{
-    //Variables
-    int CNT;
-    long int P1, P2, node1, node2;
-    
-    for (long int i = 0; i < cluster.size(); i++) {
-        CNT = cluster[i];
-        for (long int j = 0; j < contacts_cnt_point[CNT].size()-1; j++) {
-            //Find node numbers of the first two elements
-            P1 = contacts_cnt_point[CNT][j];
-            node1 = LM_matrix[P1];
-            P2 = contacts_cnt_point[CNT][j+1];
-            node2 = LM_matrix[P2];
-            //hout << " P1="<<P1<<" node1="<<node1<<" P2="<<P2<<" node2="<<node2<<endl;
-            
-            //Fill the stiffness matrix
-            Add_to_stiffness(node1, node2, stiffness);
-            
-            //Check if the current node1 has any contacts and add the corresponding contributions to the
-            //stiffness matrix
-            if (contacts[P1].size()) {
-                for (int k = 0; k < (int)contacts[P1].size(); k++) {
-                    P2 = contacts[P1][k];
-                    node2 = LM_matrix[P2];
-                    //hout << " P1="<<P1<<" node1="<<node1<<" contact P2="<<P2<<" node2="<<node2<<endl;
-                    //Fill the stiffness matrix
-                    Add_to_stiffness(node1, node2, stiffness);
-                    //hout << "Added ";
-                    Remove_from_vector(P1, contacts[P2]);
-                    //hout << "Removed ";
-                }
-                contacts[P1].clear();
-            }
-        }
-        //Check if the last node has any contacts and add the corresponding contributions to the
-        //stiffness matrix
-        P1 = contacts_cnt_point[CNT].back();
-        node1 = LM_matrix[P1];
-        if (contacts[P1].size()) {
-            for (int k = 0; k < (int)contacts[P1].size(); k++) {
-                P2 = contacts[P1][k];
-                node2 = LM_matrix[P2];
-                //hout << " P1="<<P1<<" node1="<<node1<<" last contact P2="<<P2<<" node2="<<node2<<endl;
-                //Fill the stiffness matrix
-                Add_to_stiffness(node1, node2, stiffness);
-                //hout << "Added ";
-                Remove_from_vector(P1, contacts[P2]);
-                //hout << "Removed ";
-            }
-            contacts[P1].clear();
-        }
-    }
-    Print2DVec(stiffness.element, "stiffness.txt");
-}
-
-void RNetwork::Add_to_stiffness(long int node1, long int node2, MathMatrix &stiffness)
-{
-    stiffness.element[node1][node1] += 1;
-    stiffness.element[node1][node2] += -1;
-    stiffness.element[node2][node1] += -1;
-    stiffness.element[node2][node2] += 1;
 }
 
 void RNetwork::Fill_sparse_stiffness_matrix(long int nodes, vector<int> cluster, vector<vector<long int> > structure, vector<int> LM_matrix, vector<long int> &col_ind, vector<long int> &row_ptr, vector<double> &values, vector<double> &diagonal, MathMatrix &R)
@@ -2373,7 +2006,7 @@ MathMatrix RNetwork::Solve_DEA_equations_CG_SSS(long int nodes, vector<long int>
     //Iteration
     long int k;
     long int max_iter = 10*nodes;
-    int test = 100;
+    int test = 500;
     
     //Initial residual
     double R0 = 1.0E-10*sqrt(fabs(V_dot_v(R, R)));
@@ -2413,108 +2046,11 @@ MathMatrix RNetwork::Solve_DEA_equations_CG_SSS(long int nodes, vector<long int>
     //Need to put together d1 and solution X
     X.element.insert(X.element.begin(), d1.element[1]);
     X.element.insert(X.element.begin(), d1.element[0]);
-    Print2DVec(X.element, "voltages.txt");
-    Print1DVec(col_ind, "col_ind.txt");
-    Print1DVec(row_ptr, "row_ptr.txt");
-    Print1DVec(values, "values.txt");
-    Print1DVec(diagonal, "diagonal.txt");//*/
-    
-    return X;
-}
-
-//This function solves the equation of the electric circuit as done in the Direct Electrifing Algorithm (DEA)
-MathMatrix RNetwork::Solve_DEA_equations_CG_SSS(MathMatrix stiffness)
-{
-    long int nodes = stiffness.element.size();
-    //hout << " nodes in stiffness=" << nodes <<endl;
-    
-    //Vectors for the SSS matrix-vector multiplication
-    vector<long int> rowptr(nodes-1,0), colind;
-    vector<double> diagonal(nodes-2,0), values;
-    
-    //Vectors for the CG algorithm
-    MathMatrix X(nodes-2,1), R(nodes-2,1), P(nodes-2,1);
-    
-    //Voltage applied to the sample
-    double voltage = (double)(nodes*10);
-    //double voltage = 1;
-    
-    //Fill vectors for the SSS
-    for (long int i = 2; i < stiffness.element.size(); i++) {
-        for (long int j = 2; j < i; j++) {
-            if (abs(stiffness.element[i][j]) > 0) {
-                values.push_back(stiffness.element[i][j]);
-                colind.push_back(j-2);
-            }
-        }
-        rowptr[i-1] = values.size();
-        diagonal[i-2] = stiffness.element[i][i];
-        //Initialize r0 = b, p0 = r0
-        R.element[i-2][0] = -voltage*stiffness.element[i][0];
-        P.element[i-2][0] = R.element[i-2][0];
-    }
-    //Known vector
-    MathMatrix d1(2,1);
-    
-    //Boundary conditions
-    d1.element[0][0] = voltage;
-    d1.element[1][0] = 0;
-    
-    //Variables of the algorithm
-    MathMatrix AP(nodes-2,1);
-    double alpha, beta, rr0, rr;
-    
-    //=========================================
-    // Conjugate Gradient Algorithm
-    
-    //Iteration
-    long int k;
-    long int max_iter = 10*nodes;
-    int test = 100;
-    
-    //Initial residual
-    //double R0 = 1.0E-6*sqrt(fabs(V_dot_v(R, R)));
-    double R0 = Zero*sqrt(fabs(V_dot_v(R, R)));
-    
-    for (k = 1; k <= max_iter; k++) {
-        //Calculate Ap
-        AP = spM_V_SSS(P, rowptr, colind, diagonal, values);
-        //Calculate norm or residual of step k-1. Will be used later as convergence criteria and to calculate beta
-        rr0 = V_dot_v(R, R);
-        //Step length
-        alpha = rr0/(V_dot_v(P, AP));
-        //Approximate solution
-        X = X + P*alpha;
-        //Residual
-        R = R - AP*alpha;
-        //Calculate norm or residual of step k. Used as convergence criteria and to calculate beta
-        rr = V_dot_v(R, R);
-        //Status update: print every hundred iterations
-        if ( k == test){
-            hout << "CG iteration " << k << endl;
-            test = test + 100;
-        }
-        //Convergence criteria
-        if (sqrt(fabs(rr)) <= R0)
-            break;
-        //Improvement of step
-        beta = rr/rr0;
-        //Search direction
-        P = R + P*beta;
-    }
-    
-    if (k == max_iter)
-        hout << "CG reached maximum number of iterations" << endl;
-    hout << "CG iterations: " << k << endl;
-    
-    //Need to put together d1 and solution X
-    X.element.insert(X.element.begin(), d1.element[1]);
-    X.element.insert(X.element.begin(), d1.element[0]);
     /*Print2DVec(X.element, "voltages.txt");
-     Print1DVec(colind, "col_ind2.txt");
-     Print1DVec(rowptr, "row_ptr2.txt");
-     Print1DVec(values, "values2.txt");
-     Print1DVec(diagonal, "diagonal2.txt");//*/
+     Print1DVec(col_ind, "col_ind.txt");
+     Print1DVec(row_ptr, "row_ptr.txt");
+     Print1DVec(values, "values.txt");
+     Print1DVec(diagonal, "diagonal.txt");//*/
     
     return X;
 }
@@ -2802,9 +2338,9 @@ int RNetwork::Clusters_length(vector<Point_3D> points, vector<vector<long int> >
         clusters_fractions[i] = clusters_lengths[i]/total_length;
     }
     
-    //Print1DVec(clusters_lengths, "clusters_lengths.txt");
-    //Print1DVec(dead_branches_lengths, "dead_branches_lengths.txt");
-    //Print1DVec(clusters_fractions, "clusters_fractions.txt");
+    //Print1DVec(clusters_lengths, "clusters_lengths_.txt");
+    //Print1DVec(dead_branches_lengths, "dead_branches_lengths_.txt");
+    //Print1DVec(clusters_fractions, "clusters_fractions_.txt");
     Append1DVec(clusters_lengths, "clusters_lengths.txt");
     Append1DVec(dead_branches_lengths, "dead_branches_lengths.txt");
     Append1DVec(clusters_fractions, "clusters_fractions.txt");
@@ -2870,13 +2406,13 @@ int RNetwork::Export_visualization_files(const struct RVE_Geo &cell_geo, vector<
 void RNetwork::Update_box_geometry()
 {
     //size
-    box_geometry.len_x = box_geometry.len_x - dwindow;
-    box_geometry.wid_y = box_geometry.wid_y - dwindow;
-    box_geometry.hei_z = box_geometry.hei_z - dwindow;
+    box_geometry.len_x = box_geometry.len_x + dwindow;
+    box_geometry.wid_y = box_geometry.wid_y + dwindow;
+    box_geometry.hei_z = box_geometry.hei_z + dwindow;
     //reference point
-    box_geometry.poi_min.x = box_geometry.poi_min.x + dwindow/2;
-    box_geometry.poi_min.y = box_geometry.poi_min.y + dwindow/2;
-    box_geometry.poi_min.z = box_geometry.poi_min.z + dwindow/2;
+    box_geometry.poi_min.x = box_geometry.poi_min.x - dwindow/2;
+    box_geometry.poi_min.y = box_geometry.poi_min.y - dwindow/2;
+    box_geometry.poi_min.z = box_geometry.poi_min.z - dwindow/2;
     //These variables are to store the size of the RVE and reduces operations when accessing them
     lx = box_geometry.len_x;
     ly = box_geometry.wid_y;
