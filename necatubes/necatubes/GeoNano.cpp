@@ -1529,7 +1529,7 @@ int GeoNano::Get_ellip_clusters(const struct RVE_Geo &cell, struct Clust_Geo &cl
         
 		//-------------------------------------------------------------
 		//¼ì²éÍÖÇòÊÇ·ñÓëµ¥°û»òÕßÆäËûÍÖÇòÏà½»
-		double delt_h = ell_temp.c/50;						//·Ö¸îµÄ´ÎÊıÌ«¶àÓ°Ïì¼ÆËãĞ§Â
+		double delt_h = ell_temp.c/50;						//·Ö¸îµÄ´ÎÊıÌ«¶àÓ°Ïì¼ÆËãĞ§?
 		int k1 = (int)(sqrt(pow(ell_temp.a,2)+pow(ell_temp.b,2))/delt_h);
 		int K = 4*(k1+1);
 		double sita = 2*PI/K;
@@ -1872,7 +1872,7 @@ int GeoNano::Cnt_cross_cluster_surface(const double &growth_probability, const v
                 
 				if(f1>Zero)
 				{
-					seed = (2053*seed + 13849)%MAX_INT;  //¼ÆËãÍÅ´ØÄÚ²¿Éú³¤¸ÅÂ
+					seed = (2053*seed + 13849)%MAX_INT;  //¼ÆËãÍÅ´ØÄÚ²¿Éú³¤¸Å?
 					if((double)seed/MAX_INT<=growth_probability)
 					{
 						ellip_num = i;
@@ -1911,7 +1911,7 @@ int GeoNano::Cnt_cross_cluster_surface(const double &growth_probability, const v
         
 		if(f1>Zero)
 		{
-			seed = (2053*seed + 13849)%MAX_INT;  //¼ÆËãÍÅ´ØÄÚ²¿Éú³¤¸ÅÂ
+			seed = (2053*seed + 13849)%MAX_INT;  //¼ÆËãÍÅ´ØÄÚ²¿Éú³¤¸Å?
 			if((double)seed/MAX_INT<=growth_probability)	return 1;	//ÄÉÃ×¹ÜÒªÔÚÍÅ´ØÄÚÕÛ»ØÉú³¤
 			else { ellip_num = -1; return 0; } //¼ÌĞøÉú³¤
 		}
@@ -1950,7 +1950,7 @@ int GeoNano::Cnt_go_through_a_cluster(const double &growth_probability, const st
     
 	if(ef>Zero)
 	{
-		seed = (2053*seed + 13849)%MAX_INT;  //¼ÆËãÍÅ´ØÄÚ²¿Éú³¤¸ÅÂ
+		seed = (2053*seed + 13849)%MAX_INT;  //¼ÆËãÍÅ´ØÄÚ²¿Éú³¤¸Å?
 		if((double)seed/MAX_INT<=growth_probability)	return 1;	//ÄÉÃ×¹ÜÒªÔÚÍÅ´ØÄÚÕÛ»ØÉú³¤
 		else  return 0;
 	}
